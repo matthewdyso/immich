@@ -501,10 +501,19 @@ class AssetFaceSync extends BaseSync {
 class AssetExifSync extends BaseSync {
   @GenerateSql({ params: [dummyQueryOptions], stream: true })
   getUpserts(options: SyncQueryOptions) {
-    return this.upsertQuery('asset_exif', options)
+    // A parent updated beyond this sync's cutoff is absent from the asset
+    // stream. Defer its EXIF too, using the same effective marker for ordering
+    // and acknowledgements so advancing past other EXIF cannot skip it forever.
+    const updateId = sql<string>`greatest(asset_exif."updateId", asset."updateId")`;
+    return this.db
+      .selectFrom('asset_exif')
+      .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
       .select(columns.syncAssetExif)
-      .select('asset_exif.updateId')
-      .where('assetId', 'in', (eb) => eb.selectFrom('asset').select('id').where('ownerId', '=', options.userId))
+      .select(updateId.as('updateId'))
+      .where('asset.ownerId', '=', options.userId)
+      .where(updateId, '<', options.nowId)
+      .$if(!!options.ack, (qb) => qb.where(updateId, '>', options.ack!.updateId))
+      .orderBy(updateId, 'asc')
       .stream();
   }
 }
