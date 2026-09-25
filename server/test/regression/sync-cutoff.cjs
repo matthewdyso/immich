@@ -40,9 +40,19 @@ async function main() {
   }
   assert.ok(nowId < marker, `cutoff ${nowId} must stay below uncommitted marker ${marker}`);
 
-  const after = await repo.getNow();
-  assert.ok(after.nowId > marker, 'cutoff must advance once the writer commits');
-  console.log('PASS: cutoff excludes markers from open write transactions and advances after commit');
+  // A write stamped up to 10 seconds in the past (clock stepped backwards) must still land above the cutoff.
+  const { rows } = await sql`SELECT immich_uuid_v7(now() - interval '9 seconds') AS stepped`.execute(reader);
+  const { nowId: lagged } = await repo.getNow();
+  assert.ok(lagged < rows[0].stepped, `cutoff ${lagged} must stay below a marker from a 9s clock step`);
+
+  // Poll rather than sleep exactly 10s: the host clock itself may step back during the wait.
+  let after = await repo.getNow();
+  for (const deadline = Date.now() + 15_000; after.nowId <= marker && Date.now() < deadline; ) {
+    await pause(250);
+    after = await repo.getNow();
+  }
+  assert.ok(after.nowId > marker, 'cutoff must advance once the writer commits and the lag passes');
+  console.log('PASS: cutoff excludes open write transactions and backwards clock steps, and advances after');
 }
 main()
   .catch((error) => {
