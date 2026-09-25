@@ -46,10 +46,13 @@ export class SyncCheckpointRepository {
     // still open can later commit a marker older than rows already streamed and acked, so the client never
     // sees it. Cap the cutoff at the start of the oldest open write transaction so every marker below it is final.
     const oldestWrite = sql<Date>`(select min(xact_start) from pg_stat_activity where backend_xid is not null and pid <> pg_backend_pid())`;
+    // The system clock can also step backwards (WSL2 corrects drift in jumps of ~1s under load), stamping a later
+    // write with an older marker. Lagging the cutoff keeps such markers above anything already acked.
+    const clockStepMargin = sql<Date>`now() - interval '10 seconds'`;
     return this.db
       .selectNoFrom((eb) => [
         eb
-          .fn<string>('immich_uuid_v7', [sql<Date>`least(now(), ${oldestWrite}) - interval '1 millisecond'`])
+          .fn<string>('immich_uuid_v7', [sql<Date>`least(${clockStepMargin}, ${oldestWrite}) - interval '1 millisecond'`])
           .as('nowId'),
       ])
       .executeTakeFirstOrThrow();
